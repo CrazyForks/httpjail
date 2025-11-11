@@ -41,6 +41,28 @@ allowedHosts.includes(r.host);
 httpjail --js-file rules.js -- command
 ```
 
+#### Automatic File Reloading
+
+When using `--js-file`, httpjail automatically detects and reloads the file when it changes. This is especially useful during development and debugging:
+
+```bash
+# Start with initial rules
+echo "r.host === 'example.com'" > rules.js
+httpjail --js-file rules.js -- your-app
+
+# In another terminal, update the rules (reloads automatically on next request)
+echo "r.host === 'github.com'" > rules.js
+```
+
+**How it works:**
+- File modification time (mtime) is checked on each request
+- If the file has changed, it's reloaded and validated
+- Invalid JavaScript is rejected and existing rules are kept
+- Reload happens atomically without interrupting request processing
+- Zero overhead when the file hasn't changed
+
+**Note:** File watching is only active when using `--js-file`. Inline rules (`--js`) do not reload.
+
 ## Response Format
 
 {{#include ../../includes/response-format-table.md}}
@@ -60,6 +82,24 @@ r.host === 'facebook.com' ? {deny_message: 'Social media blocked'} : true
 
 // Limit request upload size to 1KB (headers + body)
 ({allow: {max_tx_bytes: 1024}})
+```
+
+## Using Return Statements
+
+JavaScript rules don't allow naked `return` statements. To use returns, wrap your code in an IIFE:
+
+```javascript
+(function() {
+  if (r.host === 'github.com') {
+    return true;
+  }
+  
+  if (r.host.match(/facebook|twitter/)) {
+    return {deny_message: "Blocked"};
+  }
+  
+  return false;
+})();
 ```
 
 ## Common Patterns
@@ -131,6 +171,72 @@ const patterns = [
 // Build request string using host and path for simpler patterns
 const requestString = `${r.method} ${r.host}${r.path}`;
 patterns.some(pattern => pattern.test(requestString))
+```
+
+## Debugging with Console API
+
+JavaScript rules support the full console API for debugging. Each method maps to a corresponding tracing level:
+
+| Console Method | Tracing Level | Use Case |
+|----------------|---------------|----------|
+| `console.debug()` | DEBUG | Detailed troubleshooting information |
+| `console.log()` | INFO | General informational messages |
+| `console.info()` | INFO | Informational messages (e.g., allowed requests) |
+| `console.warn()` | WARN | Warning messages (e.g., suspicious patterns) |
+| `console.error()` | ERROR | Error messages (e.g., blocked threats) |
+
+### Example
+
+```javascript
+// Debug: detailed information
+console.debug("Evaluating request:", r.method, r.url);
+console.debug("Full request:", r);
+
+// Info: general messages
+console.info("Allowing trusted domain:", r.host);
+
+// Warn: suspicious patterns
+console.warn("Suspicious path detected:", r.path);
+
+// Error: security issues
+console.error("Blocked malicious request:", r.url);
+```
+
+### Viewing Console Output
+
+Set `RUST_LOG` to control which messages appear:
+
+```bash
+# Show debug and above (debug, info, warn, error) - all console output
+RUST_LOG=debug httpjail --js-file rules.js -- command
+
+# Show info and above (info, warn, error) - recommended for production
+# Includes console.log(), console.info(), console.warn(), console.error()
+RUST_LOG=info httpjail --js-file rules.js -- command
+
+# Show only warnings and errors
+RUST_LOG=warn httpjail --js-file rules.js -- command
+```
+
+Example output with color coding:
+
+```
+DEBUG httpjail::rules::js: Evaluating request: GET https://api.github.com/users
+INFO  httpjail::rules::js: Allowing trusted domain: api.github.com
+WARN  httpjail::rules::js: Suspicious path detected: /admin
+ERROR httpjail::rules::js: Blocked malicious request: https://evil.com/exploit
+```
+
+### Objects and Arrays
+
+Objects and arrays are automatically JSON-stringified:
+
+```javascript
+console.log("Request:", r);
+// Output: Request: {"url":"https://...","method":"GET",...}
+
+console.log("Complex:", {hosts: ["a.com", "b.com"], count: 42});
+// Output: Complex: {"hosts":["a.com","b.com"],"count":42}
 ```
 
 ## When to Use
